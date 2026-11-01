@@ -249,18 +249,44 @@ def send_telegram(blocks):
         chunks.append(current)
 
     for chunk in chunks:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": CHAT_ID,
-                "text": chunk,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        resp = post_telegram(payload)
+        if resp.status_code == 400:
+            # HTML biçimlendirmesi reddedildiyse etiketsiz düz metinle tekrar dene
+            print(f"[uyarı] HTML reddedildi, düz metin deneniyor: {resp.text}", file=sys.stderr)
+            plain = html.unescape(re.sub(r"<[^>]+>", "", chunk))
+            resp = post_telegram({"chat_id": CHAT_ID, "text": plain, "disable_web_page_preview": True})
         if not resp.ok:
             raise RuntimeError(f"Telegram hatası: {resp.status_code} {resp.text}")
+        time.sleep(1)
+
+
+def post_telegram(payload):
+    """Telegram'a istek atar; zaman aşımı ve yoğunluk (429) durumunda birkaç kez yeniden dener."""
+    last_error = None
+    for attempt in range(4):
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json=payload,
+                timeout=60,
+            )
+            if resp.status_code == 429:
+                wait = resp.json().get("parameters", {}).get("retry_after", 5)
+                last_error = "429 Too Many Requests"
+                time.sleep(wait + 1)
+                continue
+            return resp
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            print(f"[uyarı] Telegram denemesi {attempt + 1} başarısız: {exc}", file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"Telegram'a ulaşılamadı: {last_error}")
 
 
 def main():
